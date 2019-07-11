@@ -9,6 +9,7 @@ curses.cbreak()
 stdscr.keypad(1)
 curses.curs_set(0)
 
+lang = "fr"
 query_limit = "75"
 highlight = 0
 page = 0
@@ -19,6 +20,12 @@ q = ["best", "720p", "480p", "360p", "worst", "audio_only"]
 quality = 0
 key = 0
 donothing = False
+try:
+	weight_file = open("game_weight.json", "r")
+	weight = json.load(weight_file)
+	weight_file.close()
+except:
+	weight = {}
 
 def init_display(stdscr): 
 	global maxlen
@@ -56,6 +63,31 @@ def query_twitch(query, search):
 	buf.close()
 	return json.loads(body.decode('utf-8'))
 
+def sort_by_lang(data_list):
+	top = []
+	rem = []
+	for s in data_list:
+		if s['channel']['language'] == lang:
+			top.append(s)
+		else:
+			rem.append(s)
+	top.extend(rem)
+	return top
+
+def sort_game_by_weight(data_list):
+	top = []
+	rem = []
+	for s in data_list:
+		if s['game']['name'] in weight:
+			s['weight'] = weight[s['game']['name']]
+			top.append(s)
+		else:
+			rem.append(s)
+	
+	top.sort(key=lambda x: x['weight'], reverse=True)
+	top.extend(rem)
+	return top
+
 try:
 	windowsize = init_display(stdscr)
 	data = query_twitch("topgames", 0)
@@ -79,38 +111,43 @@ try:
 			index = 0
 			if state == "top":
 				totalitems = len(data['top'])
-				currentpage = data['top'][maxitems*page:maxitems*(page+1)]
+				game_list = data['top']
+				game_list = sort_game_by_weight(game_list)
+				currentpage = game_list[maxitems*page:maxitems*(page+1)]
 				for i in currentpage:
 					if index < maxitems:
 						if index == highlight:
 							win_l.addnstr(index*2+2, 2, str(i['game']['name']), maxlen, curses.A_REVERSE)
-							win_r.addnstr(2, 3, "Viewers: "+str(i['viewers']), maxlen)
-							win_r.addnstr(3, 3, "Channels: "+str(i['channels']), maxlen)
+							win_r.addnstr(2, 3, "👥 : "+str(i['viewers']), maxlen)
+							win_r.addnstr(3, 3, str(i['channels']) + " channels", maxlen)
 						else:
 							win_l.addnstr(index*2+2, 2, str(i['game']['name']), maxlen)
 					index += 1
 			if state == "search":
+				win_l.addstr(0, 3, data['streams'][0]['game'], curses.A_BOLD)
 				totalitems = len(data['streams'])
-				currentpage = data['streams'][maxitems*page:maxitems*(page+1)]
+				stream_list = data['streams']
+				if lang:
+					stream_list = sort_by_lang(stream_list)
+				currentpage = stream_list[maxitems*page:maxitems*(page+1)]
 				for i in currentpage:
 					if index < maxitems:
 						if index == highlight:
-							win_l.addnstr(index*2+2, 2, str(i['channel']['display_name']), maxlen, curses.A_REVERSE)
+							win_l.addnstr(index*2+2, 2, "["+str(i['channel']['language'])+"] "+str(i['channel']['display_name']), maxlen, curses.A_REVERSE)
 							win_r.addnstr(windowsize[0]-3, 2, "quality: +-", maxlen)
 							win_r.addnstr(windowsize[0]-2, 3, q[quality], maxlen)
-							win_r.addnstr(2, 3, str(i['game']), maxlen)
-							win_r.addnstr(4, 3, "Viewers: "+str(i['viewers']), maxlen)
-							win_r.addstr(5, 3, "Status:")
+
 							win_r.addstr(windowsize[0]-5, windowsize[1]//2-9, "back: b")
 							status = textwrap.wrap(str(i['channel']['status']), windowsize[1]//2-6)
-							l_num = 7
+							l_num = 2
 							for line in status:
 								if l_num >= windowsize[0] - 4:
 									break
-								win_r.addstr(l_num, 4, line)
+								win_r.addstr(l_num, 3, line, curses.A_BOLD)
 								l_num += 1
+							win_r.addnstr(l_num+1, 3, "👥: "+str(i['viewers']), maxlen)
 						else:
-							win_l.addnstr(index*2+2, 2, str(i['channel']['display_name']), maxlen)
+							win_l.addnstr(index*2+2, 2, "["+str(i['channel']['language'])+"] "+str(i['channel']['display_name']), maxlen)
 					index += 1
 			win_l.refresh()
 			win_r.refresh()
@@ -138,11 +175,23 @@ try:
 			if state == "search":
 				curses.nocbreak(); stdscr.keypad(0); curses.echo()
 				curses.endwin()
-				chat_url = "http://www.twitch.tv/"+currentpage[highlight]['channel']['display_name']+"/chat"
-				print("[twitch-curses]", currentpage[highlight]['channel']['display_name'], "-", currentpage[highlight]['channel']['status'], "(", currentpage[highlight]['viewers'], "viewers )")
+
+				selected = currentpage[highlight]
+				if not selected['game'] in weight:
+					weight[selected['game']] = 0
+				
+				if weight[selected['game']] < 40:
+					weight[selected['game']] += 1
+
+				weight_file = open("game_weight.json", "w")
+				weight_file.write(json.dumps(weight))
+				weight_file.close()
+
+				chat_url = "http://www.twitch.tv/"+selected['channel']['display_name']+"/chat"
+				print("[twitch-curses]", selected['channel']['display_name'], "-", selected['channel']['status'], "(", selected['viewers'], "viewers )")
 				print("[twitch-curses] Chat url:", chat_url)
 				print("[twitch-curses] Launching streamlink")
-				ls_exit_code = subprocess.call(["streamlink", "--http-header", "Client-ID=caozjg12y6hjop39wx996mxn585yqyk", currentpage[highlight]['channel']['url'], q[quality]])
+				ls_exit_code = subprocess.call(["streamlink", "--http-header", "Client-ID=caozjg12y6hjop39wx996mxn585yqyk", selected['channel']['url'], q[quality]])
 				while ls_exit_code != 0:
 					print("\n[twitch-curses] Streamlink returned an error. This usually means that the selected stream quality is not available. If that is the case, then you can now choose one of the available streams printed above (defaults to 'best' if left empty). Or you can type 'A' to abort.")
 					selected_stream = input("Stream to open [best]: ")
@@ -150,7 +199,7 @@ try:
 						break
 					if selected_stream == "":
 						selected_stream = "best"
-					ls_exit_code = subprocess.call(["streamlink", "--http-header", "Client-ID=caozjg12y6hjop39wx996mxn585yqyk", currentpage[highlight]['channel']['url'], selected_stream])
+					ls_exit_code = subprocess.call(["streamlink", "--http-header", "Client-ID=caozjg12y6hjop39wx996mxn585yqyk", selected['channel']['url'], selected_stream])
 				stdscr = curses.initscr()
 				curses.noecho()
 				curses.cbreak()
@@ -172,7 +221,7 @@ try:
 				state = "top"
 				highlight = hl_cache
 				page = p_cache
-		elif key == ord('+') and quality > 0:
+		elif key == ord('+') or key == ord('=') and quality > 0:
 			quality -= 1
 		elif key == ord('-') and quality < 5:
 			quality += 1
